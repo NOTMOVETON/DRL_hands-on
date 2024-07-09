@@ -57,3 +57,72 @@ class MaxAndSkipEnv(gym.Wrapper):
         self._obs_buffer.append(obs)
         return obs, info 
     
+
+class ProcessFrame84(gym.ObservationWrapper):
+    def __init__(self, env=None):
+        super(ProcessFrame84, self).__init__(env)
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(84,84,1), dtype=np.uint8)
+
+        def observation(self, obs):
+            return ProcessFrame84.process(obs)
+        
+        @staticmethod
+        def process(frame):
+            if frame.size == 210 * 160 * 3:
+                img = np.reshape(frame, [210, 160, 3]).astype(
+                    np.float32)
+            elif frame.size == 250 * 160 * 3:
+                img = np.reshape(frame, [250, 160, 3]).astype(
+                    np.float32)
+            else:
+                assert False, "Unknown resolution."
+            img = img[:, :, 0]*0.299 + img[:, :, 1]*0.587 + img[:, :, 2]*0.114
+            resized_image = cv2.resize(img, (84, 110), interpolation=cv2.INTER_AREA)
+            x_t = resized_image[18:102, :]
+            x_t = np.reshape(x_t, [84, 84, 1])
+            return x_t.astype(np.uint8)
+
+class BufferWrapper(gym.ObservationWrapper):
+    def __init__(self, env, n_steps, dtype=np.float32):
+        super(BufferWrapper, self).__init__(env)
+        self.dtype = dtype
+        old_space = env.observation_space
+        self.observation_space = gym.spaces.Box(old_space.low.repeat(n_steps, axis=0),
+                                                old_space.high.repeat(n_steps, axis=0), 
+                                                dtype=self.dtype)
+        
+    def reset(self):
+        self.buffer = np.zeros.like(self.observation_space.low, dtype=self.dtype)
+        obs, info = self.env.reset()
+        return self.observation(obs), info
+    
+    def observation(self, observation):
+        self.buffer[:-1] = self.buffer[1:]
+        self.buffer[-1] = observation
+        return self.buffer
+    
+
+class ImageToPytorch(gym.ObservationWrapper):
+    def __init__(self, env):
+        super(ImageToPytorch, self).__init__(env)
+        old_shape = self.observation_space.shape
+        new_shape = (old_shape[2], old_shape[0], old_shape[1])
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=new_shape, dtype=np.float32)
+    
+    def observation(self, observation):
+        return np.moveaxis(observation, 2, 0)
+
+class ScaledFloatFrame(gym.ObservationWrapper):
+    def __init__(self, env):
+        super(ScaledFloatFrame, self).__init__(env)
+
+    def observation(self, obs):
+        return np.array(obs).astype(np.float32) / 255.0
+
+def wrap_env(env: gym.Env):
+    env = MaxAndSkipEnv(env)
+    env = FireResetEnv(env)
+    env = ImageToPytorch(env)
+    env = BufferWrapper(env)
+    env = ScaledFloatFrame(env)
+    return env
