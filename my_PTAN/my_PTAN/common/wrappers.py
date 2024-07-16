@@ -1,131 +1,65 @@
-import cv2
+import typing as tt
 import gymnasium as gym
+from gymnasium import spaces
 import collections
 import numpy as np
+from stable_baselines3.common import atari_wrappers
 
-class FireResetEnv(gym.Wrapper):
-    def __init__(self, env: gym.Env):
-        super(FireResetEnv, self).__init__(env)
 
-        try:
-            assert env.unwrapped.get_action_meanings()[1] == "FIRE"
-        except AssertionError:
-            raise Exception('ACTION 1 NOT FIRE. FireResetEnv Wrapper.')
-        
-        try:
-            assert len(env.unwrapped.get_action_meanings()) >= 3
-        except AssertionError:
-            raise Exception('len(actions) < 3. FireResetEnv Wrapper.')
-
-    def reset(self, seed=None, options=None):
-        '''
-        i do not understand what happening here
-        '''
-        self.env.reset(seed=seed, options=options)
-        obs, _, terminated, truncated, info = self.env.step(1)
-        if terminated or truncated:
-            self.env.reset(seed=seed, options=options)
-        obs, _, terminated, truncated, info = self.env.step(2)
-        if terminated or truncated:
-            self.env.reset(seed=seed, options=options)
-        return obs, info
-
-    def step(self, ac):
-        return self.env.step(ac)
-    
-
-class MaxAndSkipEnv(gym.Wrapper):
-    def __init__(self, env, skip=4):
-        super(MaxAndSkipEnv, self).__init__(env)
-        self._obs_buffer = collections.deque(maxlen=2)
-        self._skip = skip
-    
-    def step(self, action):
-        total_reward = 0.0
-        for _ in range(self._skip):
-            obs, reward, terminated, truncated, info = self.env.step(action)
-            self._obs_buffer.append(obs)
-            total_reward += reward
-            if (terminated or truncated):
-                break
-        max_frame = np.max(np.stack(self._obs_buffer), axis=0)
-        return max_frame, total_reward, terminated, truncated, info
-
-    def reset(self, seed=None, options=None):
-        self._obs_buffer.clear()
-        obs, info = self.env.reset(seed=seed, options=options)
-        self._obs_buffer.append(obs)
-        return obs, info 
-    
-
-class ProcessFrame84(gym.ObservationWrapper):
-    def __init__(self, env=None):
-        super(ProcessFrame84, self).__init__(env)
-        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(84,84,1), dtype=np.uint8)
-
-    def observation(self, obs):
-        return ProcessFrame84.process(obs)
-    
-    @staticmethod
-    def process(frame):
-        if frame.size == 210 * 160 * 3:
-            img = np.reshape(frame, [210, 160, 3]).astype(
-                np.float32)
-        elif frame.size == 250 * 160 * 3:
-            img = np.reshape(frame, [250, 160, 3]).astype(
-                np.float32)
-        else:
-            assert False, "Unknown resolution."
-        img = img[:, :, 0]*0.299 + img[:, :, 1]*0.587 + img[:, :, 2]*0.114
-        resized_image = cv2.resize(img, (84, 110), interpolation=cv2.INTER_AREA)
-        x_t = resized_image[18:102, :]
-        x_t = np.reshape(x_t, [84, 84, 1])
-        return x_t.astype(np.uint8)
-
-class BufferWrapper(gym.ObservationWrapper):
-    def __init__(self, env, n_steps=4, dtype=np.float32):
-        super(BufferWrapper, self).__init__(env)
-        self.env = env
-        self.dtype = dtype
-        old_space = env.observation_space
-        self.observation_space = gym.spaces.Box(old_space.low.repeat(n_steps, axis=0),
-                                                old_space.high.repeat(n_steps, axis=0), 
-                                                dtype=self.dtype)
-        
-    def reset(self, seed=None, options=None):
-        self.buffer = np.zeros_like(self.observation_space.low, dtype=self.dtype)
-        obs, info = self.env.reset(seed=seed, options=options)
-        return self.observation(obs), info
-    
-    def observation(self, observation):
-        self.buffer[:-1] = self.buffer[1:]
-        self.buffer[-1] = observation
-        return self.buffer
-    
-
-class ImageToPytorch(gym.ObservationWrapper):
+class ImageToPyTorch(gym.ObservationWrapper):
     def __init__(self, env):
-        super(ImageToPytorch, self).__init__(env)
-        old_shape = self.observation_space.shape
-        new_shape = (old_shape[2], old_shape[0], old_shape[1])
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=new_shape, dtype=np.float32)
-    
+        super(ImageToPyTorch, self).__init__(env)
+        obs = self.observation_space
+        assert isinstance(obs, gym.spaces.Box)
+        assert len(obs.shape) == 3
+        new_shape = (obs.shape[-1], obs.shape[0], obs.shape[1])
+        self.observation_space = gym.spaces.Box(
+            low=obs.low.min(), high=obs.high.max(),
+            shape=new_shape, dtype=obs.dtype)
+
     def observation(self, observation):
-        
         return np.moveaxis(observation, 2, 0)
 
-class ScaledFloatFrame(gym.ObservationWrapper):
-    def __init__(self, env):
-        super(ScaledFloatFrame, self).__init__(env)
 
-    def observation(self, obs):
-        return np.array(obs).astype(np.float32) / 255.0
+class BufferWrapper(gym.ObservationWrapper):
+    def __init__(self, env, n_steps):
+        super(BufferWrapper, self).__init__(env)
+        obs = env.observation_space
+        assert isinstance(obs, spaces.Box)
+        new_obs = gym.spaces.Box(
+            obs.low.repeat(n_steps, axis=0),
+            obs.high.repeat(n_steps, axis=0), dtype=obs.dtype)
+        self.observation_space = new_obs
+        self.buffer = collections.deque(maxlen=n_steps)
 
-def wrap_env(env: gym.Env):
-    env = MaxAndSkipEnv(env)
-    env = FireResetEnv(env)
-    env = ProcessFrame84(env)
-    env = ImageToPytorch(env)
-    env = BufferWrapper(env)
-    env = ScaledFloatFrame(env)
+    def reset(self, *, seed: tt.Optional[int] = None,
+              options: tt.Optional[dict[str, tt.Any]] = None):
+        for _ in range(self.buffer.maxlen-1):
+            self.buffer.append(self.env.observation_space.low)
+        obs, extra = self.env.reset()
+        return self.observation(obs), extra
+
+    def observation(self, observation: np.ndarray) -> np.ndarray:
+        self.buffer.append(observation)
+        return np.concatenate(self.buffer)
+
+
+def wrap_dqn(env: gym.Env, stack_frames: int = 4,
+             episodic_life: bool = True, clip_reward: bool = True,
+             noop_max: int = 0) -> gym.Env:
+    """
+    Apply a common set of wrappers for Atari games.
+    :param env: Environment to wrap
+    :param stack_frames: count of frames to stack, default=4
+    :param episodic_life: convert life to end of episode
+    :param clip_reward: reward clipping
+    :param noop_max: how many NOOP actions to execute
+    :return: wrapped environment
+    """
+    assert 'NoFrameskip' in env.spec.id
+    env = atari_wrappers.AtariWrapper(
+        env, clip_reward=clip_reward, noop_max=noop_max,
+        terminal_on_life_loss=episodic_life)
+    env = ImageToPyTorch(env)
+    env = BufferWrapper(env, stack_frames)
     return env
