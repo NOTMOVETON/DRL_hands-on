@@ -6,7 +6,7 @@ from torch import nn
 import torch.nn.functional as F
 import typing as tt
 
-from . import ActionSelectors
+from . import actionSelectors
 
 States = tt.Union[tt.List[np.ndarray], np.ndarray]
 AgentStates = tt.List[tt.Any]
@@ -57,7 +57,7 @@ class NNAgent(BaseAgent):
     """
     def __init__(self, 
                  model: nn.Module, 
-                 action_selector: ActionSelectors.BaseActionSelector,
+                 action_selector: actionSelectors.BaseActionSelector,
                  preprocessor: Preprocessor,
                  device: torch.device = GPU_DEVICE):
         """
@@ -104,7 +104,7 @@ class NNAgent(BaseAgent):
 class DQNAgent(NNAgent):
     def __init__(self, 
                  model: nn.Module, 
-                 action_selector: ActionSelectors.BaseActionSelector,
+                 action_selector: actionSelectors.BaseActionSelector,
                  preprocessor: Preprocessor,
                  device: torch.device = GPU_DEVICE):
         super(DQNAgent, self).__init__(model=model, 
@@ -141,7 +141,7 @@ class TargetNet:
 class PolicyAgent(NNAgent):
     def __init__(self, 
                  model: nn.Module, 
-                 action_selector: ActionSelectors.BaseActionSelector,
+                 action_selector: actionSelectors.BaseActionSelector,
                  preprocessor: Preprocessor,
                  apply_softmax: bool = False,
                  device: torch.device = GPU_DEVICE):
